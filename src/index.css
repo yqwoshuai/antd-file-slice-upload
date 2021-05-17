@@ -1,4 +1,7 @@
 .app{
-  width: 800px;
+  width: 900px;
   margin: 100px auto;
+}
+.ant-space{
+  width: 100%;
 }
