@@ -1,15 +1,17 @@
 {
 	"name": "antd-file-slice-upload",
 	"version": "0.0.0",
-	"type": "module",
 	"scripts": {
-		"start": "vite",
+		"start": "vite & nodemon server/index.js",
 		"build": "vite build",
 		"serve": "vite preview"
 	},
 	"dependencies": {
 		"antd": "^4.15.5",
 		"axios": "^0.21.1",
+		"fs-extra": "^10.0.0",
+		"multiparty": "^4.2.2",
+		"nodemon": "2.0.1",
 		"react": "^17.0.0",
 		"react-dom": "^17.0.0",
 		"spark-md5": "^3.0.1"
