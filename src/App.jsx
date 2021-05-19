@@ -1,5 +1,14 @@
-import React, { useEffect, useState } from "react";
-import { Button, Upload, Table, Progress, Row, Col, Space } from "antd";
+import React, { useEffect, useRef, useState } from "react";
+import {
+  Button,
+  Upload,
+  Table,
+  Progress,
+  Row,
+  Col,
+  Space,
+  message,
+} from "antd";
 import { loadLimit } from "./utils";
 import axios from "axios";
 import "./index.css";
@@ -47,8 +56,6 @@ const columns = [
   },
 ];
 
-const worker = new Worker("/hash.js");
-
 function App() {
   const [nowFile, setNowFile] = useState(null);
   const [status, setStatus] = useState(uploadState.NO_UPLOAD);
@@ -56,22 +63,37 @@ function App() {
   const [totalPercent, setTotalPercent] = useState(0);
   const [hashPercent, setHashPercent] = useState(0);
   const [fileHash, setFileHash] = useState("");
+  const [showChunkList, setShowChunkList] = useState(false);
+
+  const requestList = useRef([]);
+  const requestCancelList = useRef([]);
+
+  const clearFile = () => {
+    setStatus(uploadState.NO_UPLOAD);
+    setNowFile(null);
+    setFileList([]);
+    setTotalPercent(0);
+    setHashPercent(0);
+    setShowChunkList(false);
+    setFileHash("");
+  };
 
   const createHash = (fileChunkList) => {
     return new Promise((resolve) => {
+      const worker = new Worker("/hash.js");
       worker.postMessage({ fileChunkList });
       worker.onmessage = (e) => {
         const { percentage, hash } = e.data;
         setHashPercent(percentage.toFixed(2));
         if (hash) {
           resolve(hash);
-          setStatus(uploadState.WAIT_UPLOAD);
         }
       };
     });
   };
 
   const beforeUpload = (e) => {
+    setStatus(uploadState.CREATE_HASH);
     setNowFile(e);
     const chunkList = createFileChunk(e).map(({ file, name }, index) => {
       return {
@@ -83,14 +105,29 @@ function App() {
       };
     });
     createHash(chunkList).then((res) => {
-      setStatus(uploadState.CREATE_HASH);
       chunkList.forEach((item, index) => {
         item.hash = res + "-" + index;
       });
       setFileHash(res);
       setFileList(chunkList);
+      setStatus(uploadState.WAIT_UPLOAD);
     });
     return false;
+  };
+
+  const verifyUpload = async (filename, fileHash) => {
+    const { data } = await axios({
+      url: "http://localhost:3001/verify",
+      method: "post",
+      headers: {
+        "content-type": "application/json",
+      },
+      data: JSON.stringify({
+        fileHash: fileHash,
+        filename: filename,
+      }),
+    });
+    return data;
   };
 
   const mergeRequest = async () => {
@@ -107,12 +144,21 @@ function App() {
       }),
     }).then((res) => {
       setStatus(uploadState.UPLOAD_DONE);
+      message.success("上传成功");
     });
   };
 
   const handleUpload = async (e) => {
+    const { shouldUpload } = await verifyUpload(nowFile.name, fileHash);
+    if (!shouldUpload) {
+      message.error("文件已上传，请勿重复上传");
+      clearFile();
+      return;
+    }
+    setShowChunkList(true);
     setStatus(uploadState.IS_UPLOADING);
-    const requestList = fileList
+    requestCancelList.current = [];
+    const nowRequestList = fileList
       .map(({ chunk, hash, index }) => {
         const formData = new FormData();
         formData.append("chunk", chunk);
@@ -122,10 +168,14 @@ function App() {
         return { formData, index };
       })
       .map(async ({ formData, index }) => {
+        const CancelToken = axios.CancelToken;
+        const source = CancelToken.source();
+        requestCancelList.current.push(source);
         return axios({
           url: "http://localhost:3001/",
           method: "post",
           data: formData,
+          cancelToken: source.token,
           onUploadProgress: (e) => {
             const newList = fileList.map((item) => {
               if (item.index === index) {
@@ -137,8 +187,15 @@ function App() {
           },
         });
       });
-    await Promise.all(requestList);
+    requestList.current = nowRequestList;
+    await Promise.all(nowRequestList);
     mergeRequest();
+  };
+
+  const handlePause = () => {
+    console.log(requestCancelList.current);
+    requestCancelList.current.forEach((item) => item.cancel());
+    requestCancelList.current = [];
   };
 
   const props = {
@@ -161,14 +218,34 @@ function App() {
         <Row justify={"space-between"} align={"middle"}>
           <Col>
             <Upload {...props}>
-              <Button>选择文件</Button>
+              <Button disabled={status !== uploadState.NO_UPLOAD}>
+                选择文件
+              </Button>
             </Upload>
           </Col>
-          {nowFile && <Col span={18}>{nowFile.name}</Col>}
+          {nowFile && <Col span={12}>{nowFile.name}</Col>}
           <Col>
-            <Button type="primary" onClick={handleUpload}>
-              确认上传
-            </Button>
+            <Space>
+              <Button
+                disabled={status !== uploadState.WAIT_UPLOAD}
+                type="primary"
+                onClick={handleUpload}
+              >
+                确认上传
+              </Button>
+              <Button
+                disabled={status !== uploadState.IS_UPLOADING}
+                onClick={handlePause}
+              >
+                暂停上传
+              </Button>
+              <Button
+                disabled={status !== uploadState.UPLOAD_DONE}
+                onClick={clearFile}
+              >
+                清空上传
+              </Button>
+            </Space>
           </Col>
         </Row>
         {nowFile && (
@@ -177,7 +254,7 @@ function App() {
             <Progress percent={hashPercent} />
           </div>
         )}
-        {fileList.length > 0 && (
+        {fileList.length > 0 && showChunkList && (
           <>
             <div>
               <span>总进度：</span>
