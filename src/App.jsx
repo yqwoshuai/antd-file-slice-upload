@@ -9,7 +9,6 @@ import {
   Space,
   message,
 } from "antd";
-import { loadLimit } from "./utils";
 import axios from "axios";
 import "./index.css";
 
@@ -58,18 +57,26 @@ const columns = [
 ];
 
 function App() {
+  // 当前正在上传的文件
   const [nowFile, setNowFile] = useState(null);
+  // 文件传输状态
   const [status, setStatus] = useState(uploadState.NO_UPLOAD);
+  // 切片列表
   const [fileList, setFileList] = useState([]);
+  // 文件传输总进度
   const [totalPercent, setTotalPercent] = useState(0);
+  // 文件hash计算进度
   const [hashPercent, setHashPercent] = useState(0);
+  // 文件hash
   const [fileHash, setFileHash] = useState("");
+  // 是否展示切片列表
   const [showChunkList, setShowChunkList] = useState(false);
-
+  // 使用webworker计算文件hash
   const worker = useRef(null);
-  const requestList = useRef([]);
+  // 切片请求列表的取消模块
   const requestCancelList = useRef([]);
 
+  // 清空上传组件
   const clearFile = () => {
     worker.current?.terminate();
     worker.current = null;
@@ -79,7 +86,7 @@ function App() {
     setHashPercent(0);
     setShowChunkList(false);
     setFileHash("");
-    requestList.current = [];
+    // 取消正在进行的请求
     if (status === uploadState.IS_UPLOADING) {
       requestCancelList.current.forEach((item) => item.cancel());
     }
@@ -87,10 +94,14 @@ function App() {
     setStatus(uploadState.NO_UPLOAD);
   };
 
+  // 计算文件hash
   const createHash = (fileChunkList) => {
     return new Promise((resolve) => {
+      // 开启webworker计算hash
       worker.current = new Worker("/hash.js");
+      // 传入切片列表进行计算
       worker.current.postMessage({ fileChunkList });
+      // 计算完毕传出文件hash
       worker.current.onmessage = (e) => {
         const { percentage, hash } = e.data;
         setHashPercent(percentage.toFixed(2));
@@ -101,9 +112,13 @@ function App() {
     });
   };
 
+  // 传文件前处理文件
+  // antd的Upload组件的beforeUpload返回false时会停止上传，之后自定义上传逻辑
   const beforeUpload = (e) => {
     setStatus(uploadState.CREATE_HASH);
+    // beforeUpload入参为选择的文件
     setNowFile(e);
+    // 创建文件切片信息
     const chunkList = createFileChunk(e).map(({ file, name }, index) => {
       return {
         chunk: file,
@@ -113,8 +128,10 @@ function App() {
         index,
       };
     });
+    // 创建切片列表hash
     createHash(chunkList).then((res) => {
       chunkList.forEach((item, index) => {
+        // 给切片列表的hash标明顺序
         item.hash = res + "-" + index;
       });
       setFileHash(res);
@@ -124,8 +141,9 @@ function App() {
     return false;
   };
 
+  // 验证当前文件是否已经上传过或者部分上传过
   const verifyUpload = async (filename, fileHash) => {
-    const { data, uploadedList } = await axios({
+    const { data } = await axios({
       url: "http://localhost:3001/verify",
       method: "post",
       headers: {
@@ -139,6 +157,7 @@ function App() {
     return data;
   };
 
+  // 通知后端合并文件切片
   const mergeRequest = async () => {
     await axios({
       url: "http://localhost:3001/merge",
@@ -157,12 +176,15 @@ function App() {
     });
   };
 
+  // 暂停上传
   const handlePause = () => {
     setStatus(uploadState.UPLOAD_PAUSE);
+    // 取消当前正在进行的请求
     requestCancelList.current.forEach((item) => item.cancel());
     requestCancelList.current = [];
   };
 
+  // 验证文件后创建请求
   const handleUpload = async () => {
     const { shouldUpload, uploadedList } = await verifyUpload(
       nowFile.name,
@@ -171,24 +193,28 @@ function App() {
     uploadBegin(shouldUpload, uploadedList);
   };
 
+  // 创建请求
   const uploadBegin = async (shouldUpload, uploadedList) => {
     if (!shouldUpload) {
       message.error("文件已上传，请勿重复上传");
       clearFile();
       return;
     }
-    setShowChunkList(true);
     setStatus(uploadState.IS_UPLOADING);
+    setShowChunkList(true);
     requestCancelList.current = [];
+    // 已经上传完成的切片进度为100%
     setFileList((preList) =>
       preList.map((item) => {
         item.percent = uploadedList.includes(item.hash) ? 100 : 0;
         return item;
       })
     );
+    // 过滤已经完成的请求
     const nowRequestList = fileList
       .filter(({ hash }) => !uploadedList.includes(hash))
       .map(({ chunk, hash, index }) => {
+        // 创建FormData传文件信息
         const formData = new FormData();
         formData.append("chunk", chunk);
         formData.append("hash", hash);
@@ -197,6 +223,7 @@ function App() {
         return { formData, index };
       })
       .map(async ({ formData, index }) => {
+        // axios取消请求模块需要用到axios.CancelToken
         const CancelToken = axios.CancelToken;
         const source = CancelToken.source();
         requestCancelList.current.push(source);
@@ -206,6 +233,7 @@ function App() {
           data: formData,
           cancelToken: source.token,
           onUploadProgress: (e) => {
+            // 更新切片的请求进度
             const newList = fileList.map((item) => {
               if (item.index === index) {
                 item.percent = ((e.loaded / e.total) * 100).toFixed(2);
@@ -216,27 +244,33 @@ function App() {
           },
         });
       });
-    requestList.current = nowRequestList;
+    // 发起请求
     await Promise.all(nowRequestList);
+    // 通知后端合并文件
     mergeRequest();
   };
 
-  const props = {
-    showUploadList: false,
-    beforeUpload: beforeUpload,
-  };
-
+  // 切片列表内容变化时更新上传总进度
   useEffect(() => {
     if (fileList.length > 0 && status === uploadState.IS_UPLOADING) {
       const totalLoad = fileList
         .map((item) => item.size * item.percent)
         .reduce((pre, cur) => pre + cur);
       const curPercent = (totalLoad / nowFile.size).toFixed(2);
+      // 暂停请求再次发起时，有些切片已经上传一部分，需要重新上传，会导致总进度条后退
+      // 取两者的最小值不让总进度条倒退
       setTotalPercent((pre) =>
         Number(curPercent) > Number(pre) ? curPercent : pre
       );
     }
   }, [fileList]);
+
+  
+  const props = {
+    // 隐藏默认的文件列表
+    showUploadList: false,
+    beforeUpload: beforeUpload,
+  };
 
   return (
     <div className="app">
@@ -307,10 +341,3 @@ function App() {
 }
 
 export default App;
-
-const handleUpload = () => {
-  const formData = new FormData();
-  fileList.forEach((file) => {
-    formData.append("file", file);
-  });
-};
