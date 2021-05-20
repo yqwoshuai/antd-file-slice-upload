@@ -33,7 +33,8 @@ const uploadState = {
   CREATE_HASH: 2, // 正在计算hash
   WAIT_UPLOAD: 3, // hash计算完毕等待上传
   IS_UPLOADING: 4, // 正在上传
-  UPLOAD_DONE: 5, // 上传完毕
+  UPLOAD_PAUSE: 5, // 暂停上传
+  UPLOAD_DONE: 6, // 上传完毕
 };
 
 const columns = [
@@ -65,24 +66,32 @@ function App() {
   const [fileHash, setFileHash] = useState("");
   const [showChunkList, setShowChunkList] = useState(false);
 
+  const worker = useRef(null);
   const requestList = useRef([]);
   const requestCancelList = useRef([]);
 
   const clearFile = () => {
-    setStatus(uploadState.NO_UPLOAD);
+    worker.current?.terminate();
+    worker.current = null;
     setNowFile(null);
     setFileList([]);
     setTotalPercent(0);
     setHashPercent(0);
     setShowChunkList(false);
     setFileHash("");
+    requestList.current = [];
+    if (status === uploadState.IS_UPLOADING) {
+      requestCancelList.current.forEach((item) => item.cancel());
+    }
+    requestCancelList.current = [];
+    setStatus(uploadState.NO_UPLOAD);
   };
 
   const createHash = (fileChunkList) => {
     return new Promise((resolve) => {
-      const worker = new Worker("/hash.js");
-      worker.postMessage({ fileChunkList });
-      worker.onmessage = (e) => {
+      worker.current = new Worker("/hash.js");
+      worker.current.postMessage({ fileChunkList });
+      worker.current.onmessage = (e) => {
         const { percentage, hash } = e.data;
         setHashPercent(percentage.toFixed(2));
         if (hash) {
@@ -116,7 +125,7 @@ function App() {
   };
 
   const verifyUpload = async (filename, fileHash) => {
-    const { data } = await axios({
+    const { data, uploadedList } = await axios({
       url: "http://localhost:3001/verify",
       method: "post",
       headers: {
@@ -148,8 +157,21 @@ function App() {
     });
   };
 
-  const handleUpload = async (e) => {
-    const { shouldUpload } = await verifyUpload(nowFile.name, fileHash);
+  const handlePause = () => {
+    setStatus(uploadState.UPLOAD_PAUSE);
+    requestCancelList.current.forEach((item) => item.cancel());
+    requestCancelList.current = [];
+  };
+
+  const handleUpload = async () => {
+    const { shouldUpload, uploadedList } = await verifyUpload(
+      nowFile.name,
+      fileHash
+    );
+    uploadBegin(shouldUpload, uploadedList);
+  };
+
+  const uploadBegin = async (shouldUpload, uploadedList) => {
     if (!shouldUpload) {
       message.error("文件已上传，请勿重复上传");
       clearFile();
@@ -158,7 +180,14 @@ function App() {
     setShowChunkList(true);
     setStatus(uploadState.IS_UPLOADING);
     requestCancelList.current = [];
+    setFileList((preList) =>
+      preList.map((item) => {
+        item.percent = uploadedList.includes(item.hash) ? 100 : 0;
+        return item;
+      })
+    );
     const nowRequestList = fileList
+      .filter(({ hash }) => !uploadedList.includes(hash))
       .map(({ chunk, hash, index }) => {
         const formData = new FormData();
         formData.append("chunk", chunk);
@@ -192,12 +221,6 @@ function App() {
     mergeRequest();
   };
 
-  const handlePause = () => {
-    console.log(requestCancelList.current);
-    requestCancelList.current.forEach((item) => item.cancel());
-    requestCancelList.current = [];
-  };
-
   const props = {
     showUploadList: false,
     beforeUpload: beforeUpload,
@@ -208,7 +231,10 @@ function App() {
       const totalLoad = fileList
         .map((item) => item.size * item.percent)
         .reduce((pre, cur) => pre + cur);
-      setTotalPercent((totalLoad / nowFile.size).toFixed(2));
+      const curPercent = (totalLoad / nowFile.size).toFixed(2);
+      setTotalPercent((pre) =>
+        Number(curPercent) > Number(pre) ? curPercent : pre
+      );
     }
   }, [fileList]);
 
@@ -223,7 +249,7 @@ function App() {
               </Button>
             </Upload>
           </Col>
-          {nowFile && <Col span={12}>{nowFile.name}</Col>}
+          {nowFile && <Col span={9}>{nowFile.name}</Col>}
           <Col>
             <Space>
               <Button
@@ -240,7 +266,13 @@ function App() {
                 暂停上传
               </Button>
               <Button
-                disabled={status !== uploadState.UPLOAD_DONE}
+                disabled={status !== uploadState.UPLOAD_PAUSE}
+                onClick={handleUpload}
+              >
+                恢复上传
+              </Button>
+              <Button
+                disabled={status === uploadState.NO_UPLOAD}
                 onClick={clearFile}
               >
                 清空上传

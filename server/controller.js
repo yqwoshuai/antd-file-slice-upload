@@ -47,6 +47,12 @@ const resolvePost = (req) =>
     });
   });
 
+const createUploadedList = async (fileHash) => {
+  return fse.existsSync(path.resolve(UPLOAD_DIR, fileHash))
+    ? await fse.readdir(path.resolve(UPLOAD_DIR, fileHash))
+    : "";
+};
+
 module.exports = class {
   async handleFormData(req, res) {
     const multipart = new multiparty.Form();
@@ -121,6 +127,7 @@ module.exports = class {
       res.end(
         JSON.stringify({
           shouldUpload: true,
+          uploadedList: await createUploadedList(fileHash),
         })
       );
     }
